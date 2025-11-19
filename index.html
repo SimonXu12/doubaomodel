@@ -67,6 +67,7 @@
       width: 100vw;
       height: 100vh;
       z-index: 1;
+      display: none; /* 初始隐藏，获取权限后显示 */
     }
     
     /* 控制栏样式 */
@@ -83,6 +84,7 @@
       background: rgba(255, 255, 255, 0.8);
       backdrop-filter: blur(12px);
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      display: none; /* 初始隐藏 */
     }
     
     /* 顶部信息栏 */
@@ -99,6 +101,7 @@
       color: white;
       font-size: 0.875rem;
       box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+      display: none; /* 初始隐藏 */
     }
     
     /* 加载指示器 */
@@ -152,6 +155,7 @@
       color: #1E293B;
       font-size: 0.75rem;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      display: none; /* 初始隐藏 */
     }
     
     /* 手掌检测提示 */
@@ -169,6 +173,26 @@
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
       display: none;
     }
+    
+    /* 权限请求按钮 */
+    .permission-btn {
+      background: #4F46E5;
+      color: white;
+      border: none;
+      padding: 1rem 2rem;
+      border-radius: 9999px;
+      font-size: 1rem;
+      font-weight: 600;
+      margin-top: 2rem;
+      cursor: pointer;
+      box-shadow: 0 4px 15px rgba(79, 70, 229, 0.4);
+      transition: all 0.3s ease;
+    }
+    
+    .permission-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.5);
+    }
   </style>
 </head>
 <body class="bg-dark font-inter">
@@ -176,14 +200,16 @@
   <div class="loader" id="loader">
     <div class="spinner"></div>
     <p class="text-lg">正在初始化AR体验...</p>
-    <p class="text-sm text-gray-300 mt-2">请授予相机权限以继续</p>
+    <p class="text-sm text-gray-300 mt-2">需要相机权限才能继续</p>
+    <!-- 显式权限请求按钮 -->
+    <button class="permission-btn" id="request-permission">授予相机权限</button>
   </div>
   
   <!-- AR场景容器 -->
   <div id="ar-container">
     <a-scene
       vr-mode-ui="enabled: false"
-      arjs="trackingMethod: best; sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
+      arjs="trackingMethod: best; sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3; sourceWidth: 1280; sourceHeight: 720;"
       renderer="antialias: true; precision: medium;"
       id="ar-scene"
     >
@@ -207,7 +233,7 @@
   </div>
   
   <!-- 手势操作提示 -->
-  <div class="gesture-hint">
+  <div class="gesture-hint" id="gesture-hint">
     <i class="fa fa-hand-paper-o mr-1"></i>
     <span>双指缩放/移动 | 手掌检测中</span>
   </div>
@@ -219,7 +245,7 @@
   </div>
   
   <!-- 控制栏 -->
-  <div class="controls">
+  <div class="controls" id="controls">
     <button class="control-btn" id="switch-camera" title="切换摄像头">
       <i class="fa fa-exchange text-dark text-lg"></i>
     </button>
@@ -241,19 +267,104 @@
     let handPosition = null;
     let lastHandDetectedTime = 0;
     let isFollowingHand = false;
+    let videoStream = null; // 存储视频流引用
     
     // DOM元素
     const loader = document.getElementById('loader');
     const infoBar = document.getElementById('info-bar');
+    const gestureHint = document.getElementById('gesture-hint');
     const handDetectedIndicator = document.getElementById('hand-detected');
     const switchCameraBtn = document.getElementById('switch-camera');
     const resetModelBtn = document.getElementById('reset-model');
     const toggleHandTrackingBtn = document.getElementById('toggle-hand-tracking');
+    const requestPermissionBtn = document.getElementById('request-permission');
+    const arContainer = document.getElementById('ar-container');
+    const controls = document.getElementById('controls');
     
     // 初始化应用
     async function initApp() {
       try {
-        // 等待AR场景加载完成
+        // 先检查是否已有相机权限
+        const hasPermission = await checkCameraPermission();
+        if (hasPermission) {
+          // 已有权限，直接初始化
+          requestPermissionBtn.style.display = 'none';
+          await startAR体验();
+        } else {
+          // 显示权限请求按钮
+          requestPermissionBtn.style.display = 'block';
+        }
+      } catch (error) {
+        console.error('初始化失败:', error);
+        showError('初始化失败，请刷新页面重试');
+      }
+    }
+    
+    // 检查相机权限
+    async function checkCameraPermission() {
+      try {
+        // 检查浏览器是否支持媒体设备API
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          return false;
+        }
+        
+        // 枚举设备，检查是否已有相机权限
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        
+        // 如果有视频设备且标签不为空，说明已有权限
+        return videoDevices.length > 0 && videoDevices.some(device => device.label);
+      } catch (error) {
+        console.error('检查相机权限失败:', error);
+        return false;
+      }
+    }
+    
+    // 显式请求相机权限
+    async function requestCameraPermission() {
+      try {
+        loader.querySelector('p').textContent = '正在请求相机权限...';
+        requestPermissionBtn.disabled = true;
+        requestPermissionBtn.textContent = '请求中...';
+        
+        // 请求相机权限（使用后置摄像头）
+        const constraints = {
+          video: {
+            facingMode: isRearCamera ? 'environment' : 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        };
+        
+        // 获取视频流
+        videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        // 权限获取成功，开始AR体验
+        await startAR体验();
+        
+      } catch (error) {
+        console.error('获取相机权限失败:', error);
+        
+        if (error.name === 'NotAllowedError') {
+          showError('相机权限被拒绝，请在浏览器设置中启用权限');
+        } else if (error.name === 'NotFoundError') {
+          showError('未找到摄像头设备');
+        } else {
+          showError('获取相机权限失败: ' + error.message);
+        }
+        
+        requestPermissionBtn.disabled = false;
+        requestPermissionBtn.textContent = '重新请求权限';
+      }
+    }
+    
+    // 开始AR体验
+    async function startAR体验() {
+      try {
+        loader.querySelector('p').textContent = '正在初始化AR场景...';
+        
+        // 初始化AR场景
         await initARScene();
         
         // 加载3D模型
@@ -265,34 +376,59 @@
         // 设置事件监听
         setupEventListeners();
         
-        // 隐藏加载指示器
+        // 隐藏加载指示器，显示AR场景
         setTimeout(() => {
           loader.style.opacity = 0;
           setTimeout(() => {
             loader.style.display = 'none';
+            arContainer.style.display = 'block';
+            infoBar.style.display = 'flex';
+            gestureHint.style.display = 'flex';
+            controls.style.display = 'flex';
           }, 500);
         }, 1000);
+        
       } catch (error) {
-        console.error('初始化失败:', error);
-        loader.innerHTML = `
-          <div class="text-red-400 mb-2"><i class="fa fa-exclamation-circle text-2xl"></i></div>
-          <p class="text-lg">初始化失败</p>
-          <p class="text-sm text-gray-300 mt-2">请检查相机权限或刷新页面重试</p>
-        `;
+        console.error('AR体验启动失败:', error);
+        showError('AR体验启动失败，请重试');
+        throw error;
       }
     }
     
-    // 初始化AR场景
+    // 初始化AR场景（修复版）
     function initARScene() {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         scene = document.querySelector('a-scene');
         
-        // 等待场景加载完成
+        // 监听AR.js加载事件
         scene.addEventListener('loaded', () => {
           console.log('AR场景加载完成');
           camera = scene.querySelector('a-camera');
-          resolve();
+          
+          // 确保AR.js正确使用视频流
+          setTimeout(() => {
+            const video = document.querySelector('video');
+            if (video && videoStream) {
+              // 将获取的视频流分配给AR.js的视频元素
+              video.srcObject = videoStream;
+              video.play().catch(err => console.warn('视频播放警告:', err));
+            }
+            resolve();
+          }, 500);
         });
+        
+        // 监听AR.js错误事件
+        scene.addEventListener('error', (err) => {
+          console.error('AR场景错误:', err);
+          reject(err);
+        });
+        
+        // 设置超时处理
+        setTimeout(() => {
+          if (!camera) {
+            reject(new Error('AR场景初始化超时'));
+          }
+        }, 10000);
       });
     }
     
@@ -302,9 +438,9 @@
         const modelEntity = document.getElementById('model');
         const gltfLoader = new THREE.GLTFLoader();
         
-        // 加载示例模型（可替换为自定义模型）
+        // 加载示例模型（使用更可靠的CDN链接）
         gltfLoader.load(
-          'https://cdn.jsdelivr.net/npm/three-gltf-sample-models@1.0.1/models/Duck/glTF/Duck.gltf',
+          'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models/2.0/Duck/glTF/Duck.gltf',
           (gltf) => {
             // 将Three.js模型转换为A-Frame实体
             const modelObject = new THREE.Group();
@@ -345,6 +481,7 @@
         console.error('手掌检测初始化失败:', error);
         isHandTrackingActive = false;
         toggleHandTrackingBtn.querySelector('i').classList.add('text-gray-400');
+        gestureHint.innerHTML = `<i class="fa fa-hand-paper-o mr-1"></i><span>双指缩放/移动 | 手掌追踪不可用</span>`;
       }
     }
     
@@ -353,9 +490,22 @@
       if (!isHandTrackingActive || !handModel) return;
       
       try {
-        // 获取视频流（与AR.js共享）
-        const video = document.querySelector('video');
-        if (!video) {
+        // 获取视频流（优先使用已有的流）
+        let video = document.querySelector('video');
+        
+        // 如果没有视频元素或视频流，尝试获取
+        if (!video || !video.srcObject) {
+          if (videoStream) {
+            video.srcObject = videoStream;
+            await video.play();
+          } else {
+            setTimeout(startHandDetection, 100);
+            return;
+          }
+        }
+        
+        // 确保视频已加载
+        if (video.readyState < 2) {
           setTimeout(startHandDetection, 100);
           return;
         }
@@ -374,8 +524,8 @@
           const handY = (wrist[1] + middleFingerBase[1]) / 2;
           
           // 转换为标准化坐标
-          const videoWidth = video.videoWidth;
-          const videoHeight = video.videoHeight;
+          const videoWidth = video.videoWidth || video.width;
+          const videoHeight = video.videoHeight || video.height;
           
           // 转换为屏幕坐标（0-1范围）
           const normalizedX = (handX / videoWidth) * 2 - 1;
@@ -408,6 +558,7 @@
         requestAnimationFrame(startHandDetection);
       } catch (error) {
         console.error('手掌检测出错:', error);
+        // 不中断检测，继续尝试
         setTimeout(startHandDetection, 100);
       }
     }
@@ -478,6 +629,9 @@
     
     // 设置事件监听
     function setupEventListeners() {
+      // 权限请求按钮点击事件
+      requestPermissionBtn.addEventListener('click', requestCameraPermission);
+      
       // 点击屏幕放置模型
       scene.addEventListener('click', (e) => {
         if (!isModelPlaced && e.detail.intersections.length === 0) {
@@ -497,6 +651,28 @@
       
       // 双指缩放和移动
       setupGestureControls();
+      
+      // 监听AR场景错误
+      scene.addEventListener('arjs-video-loaded', () => {
+        console.log('AR.js视频加载完成');
+      });
+      
+      scene.addEventListener('arjs-tracking-lost', () => {
+        console.log('追踪丢失');
+        infoBar.innerHTML = `<i class="fa fa-exclamation-triangle mr-2"></i><span>追踪丢失，请移动相机寻找平面</span>`;
+      });
+      
+      scene.addEventListener('arjs-tracking-found', () => {
+        console.log('追踪恢复');
+        if (isModelPlaced) {
+          infoBar.innerHTML = `
+            <i class="fa fa-check-circle text-secondary mr-2"></i>
+            <span>模型已放置，双指缩放/移动${isHandTrackingActive ? '，手掌可拖动' : ''}</span>
+          `;
+        } else {
+          infoBar.innerHTML = `<i class="fa fa-info-circle mr-2"></i><span>移动相机寻找平面，点击放置模型</span>`;
+        }
+      });
     }
     
     // 点击放置模型
@@ -538,43 +714,86 @@
       `;
     }
     
-    // 切换摄像头
-    function toggleCamera() {
+    // 切换摄像头（修复版）
+    async function toggleCamera() {
       isRearCamera = !isRearCamera;
       
-      // 更新AR.js摄像头设置
-      const arjs = scene.getAttribute('arjs');
-      arjs.sourceType = 'webcam';
-      arjs.sourceId = isRearCamera ? '' : 'user'; // user表示前置摄像头
-      scene.setAttribute('arjs', arjs);
-      
-      // 重启AR场景
-      scene.reset();
-      
-      // 更新按钮图标
-      const icon = switchCameraBtn.querySelector('i');
-      if (isRearCamera) {
-        icon.classList.remove('fa-user');
-        icon.classList.add('fa-exchange');
-      } else {
-        icon.classList.remove('fa-exchange');
-        icon.classList.add('fa-user');
+      // 停止当前视频流
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
       }
       
-      // 显示切换提示
-      infoBar.innerHTML = `
-        <i class="fa fa-camera mr-2"></i>
-        <span>已切换到${isRearCamera ? '后置' : '前置'}摄像头</span>
-      `;
-      
-      setTimeout(() => {
-        if (isModelPlaced) {
-          infoBar.innerHTML = `
-            <i class="fa fa-check-circle text-secondary mr-2"></i>
-            <span>模型已放置，双指缩放/移动，手掌可拖动</span>
-          `;
+      try {
+        // 显示加载状态
+        loader.style.display = 'flex';
+        loader.style.opacity = 1;
+        loader.querySelector('p').textContent = `正在切换到${isRearCamera ? '后置' : '前置'}摄像头...`;
+        
+        // 请求新的视频流
+        const constraints = {
+          video: {
+            facingMode: isRearCamera ? 'environment' : 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        };
+        
+        videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        // 更新AR.js摄像头设置
+        const arjs = scene.getAttribute('arjs');
+        arjs.sourceType = 'webcam';
+        arjs.sourceId = isRearCamera ? '' : 'user';
+        scene.setAttribute('arjs', arjs);
+        
+        // 重启AR场景
+        scene.reset();
+        
+        // 更新按钮图标
+        const icon = switchCameraBtn.querySelector('i');
+        if (isRearCamera) {
+          icon.classList.remove('fa-user');
+          icon.classList.add('fa-exchange');
+        } else {
+          icon.classList.remove('fa-exchange');
+          icon.classList.add('fa-user');
         }
-      }, 2000);
+        
+        // 隐藏加载状态
+        setTimeout(() => {
+          loader.style.opacity = 0;
+          setTimeout(() => {
+            loader.style.display = 'none';
+          }, 500);
+        }, 1000);
+        
+        // 显示切换提示
+        infoBar.innerHTML = `
+          <i class="fa fa-camera mr-2"></i>
+          <span>已切换到${isRearCamera ? '后置' : '前置'}摄像头</span>
+        `;
+        
+        setTimeout(() => {
+          if (isModelPlaced) {
+            infoBar.innerHTML = `
+              <i class="fa fa-check-circle text-secondary mr-2"></i>
+              <span>模型已放置，双指缩放/移动${isHandTrackingActive ? '，手掌可拖动' : ''}</span>
+            `;
+          }
+        }, 2000);
+        
+      } catch (error) {
+        console.error('切换摄像头失败:', error);
+        isRearCamera = !isRearCamera; // 恢复原状态
+        showError(`切换摄像头失败: ${error.message}`);
+        
+        // 隐藏加载状态
+        loader.style.opacity = 0;
+        setTimeout(() => {
+          loader.style.display = 'none';
+        }, 500);
+      }
     }
     
     // 重置模型位置
@@ -596,7 +815,7 @@
         if (isModelPlaced) {
           infoBar.innerHTML = `
             <i class="fa fa-check-circle text-secondary mr-2"></i>
-            <span>模型已放置，双指缩放/移动，手掌可拖动</span>
+            <span>模型已放置，双指缩放/移动${isHandTrackingActive ? '，手掌可拖动' : ''}</span>
           `;
         }
       }, 2000);
@@ -616,6 +835,7 @@
         `;
         // 重启手掌检测
         startHandDetection();
+        gestureHint.innerHTML = `<i class="fa fa-hand-paper-o mr-1"></i><span>双指缩放/移动 | 手掌检测中</span>`;
       } else {
         icon.classList.remove('text-dark');
         icon.classList.add('text-gray-400');
@@ -624,6 +844,7 @@
           <i class="fa fa-hand-paper-o mr-2"></i>
           <span>手掌追踪已关闭，双指操作模型</span>
         `;
+        gestureHint.innerHTML = `<i class="fa fa-hand-paper-o mr-1"></i><span>双指缩放/移动 | 手掌追踪已关闭</span>`;
       }
       
       setTimeout(() => {
@@ -764,8 +985,30 @@
       });
     }
     
+    // 显示错误信息
+    function showError(message) {
+      loader.innerHTML = `
+        <div class="text-red-400 mb-2"><i class="fa fa-exclamation-circle text-2xl"></i></div>
+        <p class="text-lg">${message}</p>
+        <button class="permission-btn mt-4" onclick="window.location.reload()">刷新页面</button>
+      `;
+      loader.style.opacity = 1;
+      loader.style.display = 'flex';
+    }
+    
     // 页面加载完成后初始化
     window.addEventListener('load', initApp);
+    
+    // 监听页面隐藏/显示，处理视频流
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && videoStream) {
+        // 页面隐藏时暂停视频流
+        videoStream.getTracks().forEach(track => track.enabled = false);
+      } else if (videoStream) {
+        // 页面显示时恢复视频流
+        videoStream.getTracks().forEach(track => track.enabled = true);
+      }
+    });
   </script>
 </body>
 </html>
